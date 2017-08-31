@@ -1,4 +1,6 @@
-# Installing MXNet on OS X (Mac)
+# Installing MXNet froum source on OS X (Mac)
+
+**NOTE:** For prebuild MXNet with Python installation, please refer to the [new install guide](http://mxnet.io/get_started/install.html).
 
 Installing MXNet is a two-step process:
 
@@ -6,6 +8,39 @@ Installing MXNet is a two-step process:
 2. Install the supported language-specific packages for MXNet.
 
 **Note:** To change the compilation options for your build, edit the ```make/config.mk``` file and submit a build request with the ```make``` command.
+
+## Prepare Environment for GPU Installation
+
+This section is optional. Skip to next section if you don't plan to use GPUs. If you plan to build with GPU, you need to set up the environment for CUDA and cuDNN.
+
+First, download and install [CUDA 8 toolkit](https://developer.nvidia.com/cuda-toolkit).
+
+Once you have the CUDA Toolkit installed you will need to set up the required environment variables by adding the following to your ~/.bash_profile file:
+
+```bash
+    export CUDA_HOME=/usr/local/cuda
+    export DYLD_LIBRARY_PATH="$CUDA_HOME/lib:$DYLD_LIBRARY_PATH"
+    export PATH="$CUDA_HOME/bin:$PATH"
+```
+
+Reload ~/.bash_profile file and install dependencies:
+```bash
+    . ~/.bash_profile
+    brew install coreutils
+    brew tap caskroom/cask
+```
+
+Then download [cuDNN 5](https://developer.nvidia.com/cudnn).
+
+Unzip the file and change to the cudnn root directory. Move the header files and libraries to your local CUDA Toolkit folder:
+
+```bash
+    $ sudo mv include/cudnn.h /Developer/NVIDIA/CUDA-8.0/include/
+    $ sudo mv lib/libcudnn* /Developer/NVIDIA/CUDA-8.0/lib
+    $ sudo ln -s /Developer/NVIDIA/CUDA-8.0/lib/libcudnn* /usr/local/cuda/lib/
+```
+
+Now we can start to build MXNet.
 
 ## Build the Shared Library
 
@@ -38,41 +73,8 @@ Install the dependencies, required for MXNet, with the following commands:
 	pip install jupyter
 ```
 
-### Prepare Environment for GPU Installation
-
-If you plan to build with GPU, you need to set up environment for CUDA and cuDNN.
-
-First download and install [CUDA 8 toolkit](https://developer.nvidia.com/cuda-toolkit).
-
-Once you have the CUDA Toolkit installed you will need to setup the required environment variables by adding the following to your ~/.bash_profile file:
-
-```bash
-    export CUDA_HOME=/usr/local/cuda
-    export DYLD_LIBRARY_PATH="$CUDA_HOME/lib:$DYLD_LIBRARY_PATH"
-    export PATH="$CUDA_HOME/bin:$PATH"
-```
-
-Reload ~/.bash_profile file and install dependecies:
-```bash
-    . ~/.bash_profile
-    brew install coreutils
-    brew tap caskroom/cask
-```
-
-Then download [cuDNN 5](https://developer.nvidia.com/cudnn).
-
-Unzip the file and change to cudnn root directory. Move the header files and libraries to your local CUDA Toolkit folder:
-
-```bash
-    $ sudo mv include/cudnn.h /Developer/NVIDIA/CUDA-8.0/include/
-    $ sudo mv lib/libcudnn* /Developer/NVIDIA/CUDA-8.0/lib
-    $ sudo ln -s /Developer/NVIDIA/CUDA-8.0/lib/libcudnn* /usr/local/cuda/lib/
-```
-
-Now we can start to build MXNet.
-
 ### Build MXNet Shared Library
-After you have installed the dependencies, pull the MXNet source code from Git and build MXNet to produce a MXNet library called ```libmxnet.so```.
+After you have installed the dependencies, pull the MXNet source code from Git and build MXNet to produce an MXNet library called ```libmxnet.so```.
 
 The file called ```osx.mk``` has the configuration required for building MXNet on OS X. First copy ```make/osx.mk``` into ```config.mk```, which is used by the ```make``` command:
 
@@ -100,49 +102,10 @@ If building with ```GPU``` support, add the following configuration to config.mk
 &nbsp;
 
 We have installed MXNet core library. Next, we will install MXNet interface package for the programming language of your choice:
-- [Python](#install-the-mxnet-package-for-python)
 - [R](#install-the-mxnet-package-for-r)
 - [Julia](#install-the-mxnet-package-for-julia)
 - [Scala](#install-the-mxnet-package-for-scala)
-
-## Install the MXNet Package for Python
-
-You need the following dependencies:
-
-- Python version 2.7 or later.
-- NumPy (to provide scientific computing operations).
-
-To check if Python is already installed run below command and you should be able to see which version of Python is installed on your machine.
-
-```bash
-	# Check if Python is already installed.
-	python --version
-	# Install Python if not already installed.
-	brew install python
-	# Install Numpy
-	brew install numpy
-```
-
-Next, we install Python package interface for MXNet. You can find the Python interface package for [MXNet on GitHub](https://github.com/dmlc/mxnet/tree/master/python/mxnet).
-
-```bash
-    # Assuming you are in root mxnet source code folder
-    cd python
-    sudo python setup.py install
-```
-Done! We have installed MXNet with Python interface. Run below commands to verify our installation is successful.
-```bash
-    # Open Python terminal
-    python
-
-    # You should be able to import mxnet library without any issues.
-    >>> import mxnet as mx;
-    >>> a = mx.nd.ones((2, 3));
-    >>> print ((a*2).asnumpy());
-        [[ 2.  2.  2.]
-        [ 2.  2.  2.]]
-```
-We actually did a small tensor computation using MXNet! You are all set with MXNet on your Mac.
+- [Perl](#install-the-mxnet-package-for-perl)
 
 ## Install the MXNet Package for R
 You have 2 options:
@@ -154,9 +117,10 @@ You have 2 options:
 For OS X (Mac) users, MXNet provides a prebuilt binary package for CPUs. The prebuilt package is updated weekly. You can install the package directly in the R console using the following commands:
 
 ```r
-	install.packages("drat", repos="https://cran.rstudio.com")
-	drat:::addRepo("dmlc")
-	install.packages("mxnet")
+  cran <- getOption("repos")
+  cran["dmlc"] <- "https://s3-us-west-2.amazonaws.com/apache-mxnet/R/CRAN/"
+  options(repos = cran)
+  install.packages("mxnet")
 ```
 
 ### Building MXNet from Source Code
@@ -215,6 +179,39 @@ To install the MXNet Scala package into your local Maven repository, run the fol
 
 ```bash
     make scalainstall
+```
+
+## Install the MXNet Package for Perl
+Before you build MXNet for Perl from source code, you must complete [building the shared library](#build-the-shared-library).
+After you build the shared library, run the following command from the MXNet source root directory to build the MXNet Perl package:
+
+```bash
+    brew install swig
+    sudo sh -c 'curl -L https://cpanmin.us | perl - App::cpanminus'
+    sudo cpanm -q -n PDL Mouse Function::Parameters
+
+    MXNET_HOME=${PWD}
+    export PERL5LIB=${HOME}/perl5/lib/perl5
+
+    cd ${MXNET_HOME}/perl-package/AI-MXNetCAPI/
+    perl Makefile.PL INSTALL_BASE=${HOME}/perl5
+    make
+    install_name_tool -change lib/libmxnet.so \
+        ${MXNET_HOME}/lib/libmxnet.so \
+        blib/arch/auto/AI/MXNetCAPI/MXNetCAPI.bundle
+    make install
+
+    cd ${MXNET_HOME}/perl-package/AI-NNVMCAPI/
+    perl Makefile.PL INSTALL_BASE=${HOME}/perl5
+    make
+    install_name_tool -change lib/libmxnet.so \
+            ${MXNET_HOME}/lib/libmxnet.so \
+            blib/arch/auto/AI/NNVMCAPI/NNVMCAPI.bundle
+    make install
+
+    cd ${MXNET_HOME}/perl-package/AI-MXNet/
+    perl Makefile.PL INSTALL_BASE=${HOME}/perl5
+    make install
 ```
 
 ## Next Steps

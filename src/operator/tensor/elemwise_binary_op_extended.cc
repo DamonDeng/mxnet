@@ -1,5 +1,23 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /*!
- *  Copyright (c) 2016 by Contributors
  * \file elemwise_binary_scalar_op.cc
  * \brief CPU Implementation of unary function.
  */
@@ -58,6 +76,9 @@ NNVM_REGISTER_OP(_backward_minimum)
 
 MXNET_OPERATOR_REGISTER_BINARY(_hypot)
 .add_alias("_Hypot")
+.describe(R"code(Given the "legs" of a right triangle, return its hypotenuse.
+
+)code" ADD_FILELINE)
 .set_attr<FCompute>("FCompute<cpu>", BinaryCompute<cpu, mshadow_op::hypot>)
 .set_attr<nnvm::FGradient>("FGradient", ElemwiseGradUseIn{ "_backward_hypot" });
 

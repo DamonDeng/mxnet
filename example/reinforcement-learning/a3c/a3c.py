@@ -1,3 +1,21 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+from __future__ import print_function
 import mxnet as mx
 import numpy as np
 import rl_data
@@ -75,7 +93,7 @@ def train():
 
     if args.kv_store == 'dist_sync':
         epoch_size /= kv.num_workers
-    
+
     # disable kvstore for single device
     if 'local' in kv.type and (
             args.gpus is None or len(args.gpus.split(',')) is 1):
@@ -153,22 +171,25 @@ def train():
                 module.forward(batch, is_train=True)
 
                 pi = module.get_outputs()[1]
-                h = args.beta*(mx.nd.log(pi+1e-6)+1)
-                module.backward([mx.nd.array(adv), h])
+                h = -args.beta*(mx.nd.log(pi+1e-7)*pi)
+                out_acts = np.amax(pi.asnumpy(), 1)
+                out_acts=np.reshape(out_acts,(-1,1))
+                out_acts_tile=np.tile(-np.log(out_acts + 1e-7),(1, dataiter.act_dim))
+                module.backward([mx.nd.array(out_acts_tile*adv), h])
 
-                print 'pi', pi[0].asnumpy()
-                print 'h', h[0].asnumpy()
+                print('pi', pi[0].asnumpy())
+                print('h', h[0].asnumpy())
                 err += (adv**2).mean()
                 score += r[i]
-                final_score *= (1-D[i]) 
+                final_score *= (1-D[i])
                 final_score += score * D[i]
                 score *= 1-D[i]
                 T += D[i].sum()
 
             module.update()
             logging.info('fps: %f err: %f score: %f final: %f T: %f'%(args.batch_size/(time.time()-tic), err/args.t_max, score.mean(), final_score.mean(), T))
-            print score.squeeze()
-            print final_score.squeeze()
+            print(score.squeeze())
+            print(final_score.squeeze())
 
 def test():
     log_config()
@@ -178,7 +199,7 @@ def test():
 
     # module
     dataiter = robo_data.RobosimsDataIter('scenes', args.batch_size, args.input_length, web_viz=True)
-    print dataiter.provide_data
+    print(dataiter.provide_data)
     net = sym.get_symbol_thor(dataiter.act_dim)
     module = mx.mod.Module(net, data_names=[d[0] for d in dataiter.provide_data], label_names=('policy_label', 'value_label'), context=devs)
     module.bind(data_shapes=dataiter.provide_data,

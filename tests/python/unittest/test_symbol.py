@@ -1,8 +1,27 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 import copy
 import os
+import re
 import mxnet as mx
 import numpy as np
 from common import models
+from mxnet.test_utils import discard_stderr
 import pickle as pkl
 
 def test_symbol_basic():
@@ -43,13 +62,29 @@ def test_symbol_internal():
     data = mx.symbol.Variable('data')
     oldfc = mx.symbol.FullyConnected(data=data, name='fc1', num_hidden=10)
     net1 = mx.symbol.FullyConnected(data=oldfc, name='fc2', num_hidden=100)
-    net1.list_arguments() == ['data',
-                              'fc1_weight', 'fc1_bias',
-                              'fc2_weight', 'fc2_bias']
+    assert net1.list_arguments() == ['data', 'fc1_weight', 'fc1_bias', 'fc2_weight', 'fc2_bias']
+
     internal =  net1.get_internals()
     fc1 = internal['fc1_output']
     assert fc1.list_arguments() == oldfc.list_arguments()
 
+def test_symbol_children():
+    data = mx.symbol.Variable('data')
+    oldfc = mx.symbol.FullyConnected(data=data, name='fc1', num_hidden=10)
+    net1 = mx.symbol.FullyConnected(data=oldfc, name='fc2', num_hidden=100)
+
+    assert net1.get_children().list_outputs() == ['fc1_output', 'fc2_weight', 'fc2_bias']
+    assert net1.get_children().get_children().list_outputs() == ['data', 'fc1_weight', 'fc1_bias']
+    assert net1.get_children()['fc2_weight'].list_arguments() == ['fc2_weight']
+    assert net1.get_children()['fc2_weight'].get_children() is None
+
+    data = mx.sym.Variable('data')
+    sliced = mx.sym.SliceChannel(data, num_outputs=3, name='slice')
+    concat = mx.sym.Concat(*list(sliced))
+
+    assert concat.get_children().list_outputs() == \
+        ['slice_output0', 'slice_output1', 'slice_output2']
+    assert sliced.get_children().list_outputs() == ['data']
 
 def test_symbol_pickle():
     mlist = [models.mlp2(), models.conv()]
@@ -127,12 +162,52 @@ def test_symbol_infer_shape_var():
     assert arg_shapes[1] == overwrite_shape
     assert out_shapes[0] == overwrite_shape
 
-def check_symbol_consistency(sym1, sym2, ctx):
+def test_symbol_fluent():
+    has_grad = set(['flatten', 'expand_dims', 'flip', 'tile', 'transpose', 'sum', 'nansum', 'prod',
+                    'nanprod', 'mean', 'max', 'min', 'reshape', 'broadcast_to', 'split',
+                    'broadcast_axes', 'pad', 'swapaxes', 'slice', 'slice_axis', 'take',
+                    'one_hot', 'pick', 'sort', 'topk', 'argsort', 'argmax', 'argmin',
+                    'clip', 'abs' 'sign'])
+    def check_fluent_regular(func, kwargs, shape=(5, 17, 1)):
+        with mx.name.NameManager():
+            data = mx.symbol.Variable('data')
+            regular = getattr(mx.symbol, func)(data, name=func+'0', **kwargs)
+            fluent = getattr(data, func)(**kwargs)
+            check_symbol_consistency(regular, fluent, {'ctx': mx.context.current_context(),
+                                                       'data': shape},
+                                     skip_grad=func not in has_grad)
+
+    for func in ['flatten', 'norm', 'round', 'rint', 'fix', 'floor', 'ceil', 'trunc', 'zeros_like',
+                 'ones_like', 'abs', 'sign']:
+        check_fluent_regular(func, {})
+
+    for func in ['expand_dims', 'flip', 'sort', 'topk', 'argsort', 'argmax', 'argmin']:
+        check_fluent_regular(func, {'axis': 1})
+
+    check_fluent_regular('one_hot', {'depth': 15})
+    check_fluent_regular('tile', {'reps': (1,2)})
+    check_fluent_regular('repeat', {'repeats': 3})
+    check_fluent_regular('transpose', {'axes': (1,0,2)})
+    check_fluent_regular('split', {'axis': 2, 'num_outputs': 3}, shape=(5, 17, 6))
+    check_fluent_regular('slice', {'begin': (2, 5, 1), 'end': (4, 7, 6)}, shape=(5, 17, 6))
+    check_fluent_regular('slice_axis', {'axis': 1, 'begin': 5, 'end': 7})
+    check_fluent_regular('clip', {'a_min': 0.25, 'a_max': 0.75})
+    check_fluent_regular('broadcast_axes', {'axis': (2,), 'size': (5,)})
+    check_fluent_regular('pad', {'mode': 'constant', 'pad_width': (0,0,0,0,3,0,0,4)}, shape=(5, 17, 2, 3))
+
+    for func in ['sum', 'nansum', 'prod', 'nanprod', 'mean', 'max', 'min']:
+        check_fluent_regular(func, {'axis': (1, 2)})
+
+    check_fluent_regular('reshape', {'shape': (17, 1, 5)})
+    check_fluent_regular('broadcast_to', {'shape': (5, 17, 47)})
+
+def check_symbol_consistency(sym1, sym2, ctx, skip_grad=False):
     assert sym1.list_arguments() == sym2.list_arguments()
     assert sym1.list_auxiliary_states() == sym2.list_auxiliary_states()
     assert sym1.list_outputs() == sym2.list_outputs()
 
-    mx.test_utils.check_consistency([sym1, sym2], ctx_list=[ctx, ctx])
+    mx.test_utils.check_consistency([sym1, sym2], ctx_list=[ctx, ctx],
+                                    grad_req='null' if skip_grad else 'write')
 
 def test_load_000800():
     with mx.AttrScope(ctx_group='stage1'):
@@ -165,13 +240,52 @@ def test_load_000800():
         {'ctx': mx.cpu(0), 'group2ctx': {'stage1' : mx.cpu(1), 'stage2' : mx.cpu(2)}, 'data': (1,200)})
 
 
+def test_blockgrad():
+    a = mx.sym.Variable('a')
+    b = mx.sym.BlockGrad(2*a)
+    exe = b.simple_bind(ctx=mx.cpu(), a=(10,10))
+
+
+def test_zero_prop():
+    data = mx.symbol.Variable('data')
+    for i in range(10):
+        data = data * data
+
+    exe = data.simple_bind(ctx=mx.cpu(), data=(10, 3, 256, 256))
+    big = int(re.search('Total (\d+) MB allocated', exe.debug_str()).group(1))
+
+    exe = data.simple_bind(ctx=mx.cpu(), data=(10, 3, 256, 256), grad_req='null')
+    small1 = int(re.search('Total (\d+) MB allocated', exe.debug_str()).group(1))
+
+    data = mx.sym.stop_gradient(data)
+    exe = data.simple_bind(ctx=mx.cpu(), data=(10, 3, 256, 256))
+    small2 = int(re.search('Total (\d+) MB allocated', exe.debug_str()).group(1))
+
+    assert big > small2
+    assert small1 == small2
+
+def test_zero_prop2():
+    x = mx.sym.Variable('x')
+    idx = mx.sym.Variable('idx')
+    y = mx.sym.batch_take(x, idx)
+    z = mx.sym.stop_gradient(y)
+    exe = z.simple_bind(ctx=mx.cpu(), x=(10, 10), idx=(10,),
+                        type_dict={'x': np.float32, 'idx': np.int32})
+    exe.forward()
+    exe.backward()
+
+    # The following bind() should throw an exception. We discard the expected stderr
+    # output for this operation only in order to keep the test logs clean.
+    with discard_stderr():
+        try:
+            y.simple_bind(ctx=mx.cpu(), x=(10, 10), idx=(10,),
+                          type_dict={'x': np.float32, 'idx': np.int32})
+        except:
+            return
+
+    assert False
+
+
 if __name__ == '__main__':
-    test_load_000800()
-    test_symbol_infer_shape_var()
-    test_symbol_infer_shape()
-    test_symbol_infer_type()
-    test_symbol_internal()
-    test_symbol_basic()
-    test_symbol_compose()
-    test_symbol_saveload()
-    test_symbol_pickle()
+    import nose
+    nose.runmodule()

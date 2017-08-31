@@ -1,5 +1,23 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 # pylint: disable=C0111,too-many-arguments,too-many-instance-attributes,too-many-locals,redefined-outer-name,fixme
 # pylint: disable=superfluous-parens, no-member, invalid-name
+from __future__ import print_function
 import sys
 sys.path.insert(0, "../../python")
 import numpy as np
@@ -57,7 +75,7 @@ def default_gen_buckets(sentences, batch_size, the_vocab):
 
     tl = 0
     buckets = []
-    for l, n in len_dict.items(): # TODO: There are better heuristic ways to do this    
+    for l, n in len_dict.items(): # TODO: There are better heuristic ways to do this
         if n + tl >= batch_size:
             buckets.append(l)
             tl = 0
@@ -114,11 +132,11 @@ class BucketSentenceIter(mx.io.DataIter):
                  time_major=True):
         super(BucketSentenceIter, self).__init__()
 
-        if text2id == None:
+        if text2id is None:
             self.text2id = default_text2id
         else:
             self.text2id = text2id
-        if read_content == None:
+        if read_content is None:
             self.read_content = default_read_content
         else:
             self.read_content = read_content
@@ -216,7 +234,7 @@ class BucketSentenceIter(mx.io.DataIter):
             i_idx = self.bucket_curr_idx[i_bucket]
             idx = self.bucket_idx_all[i_bucket][i_idx:i_idx+self.batch_size]
             self.bucket_curr_idx[i_bucket] += self.batch_size
-            
+
             init_state_names = [x[0] for x in self.init_states]
 
             if self.time_major:

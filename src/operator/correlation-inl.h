@@ -1,5 +1,23 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /*!
- * Copyright (c) 2015 by Contributors
  * \file correlation-inl.h
  * \brief correlation operator and symbol
  * \author Xu Dong
@@ -57,8 +75,8 @@ class CorrelationOp : public Operator {
                        const std::vector<TBlob> &out_data,
                        const std::vector<TBlob> &aux_args) {
     using namespace mshadow;
-    CHECK_EQ(in_data.size(), 2);
-    CHECK_EQ(out_data.size(), 3);
+    CHECK_EQ(in_data.size(), 2U);
+    CHECK_EQ(out_data.size(), 3U);
     Stream<xpu> *s = ctx.get_stream<xpu>();
     Tensor<xpu, 4> data1 = in_data[Correlation::kData1].get<xpu, 4, real_t>(s);
     Tensor<xpu, 4> data2 = in_data[Correlation::kData2].get<xpu, 4, real_t>(s);
@@ -170,11 +188,11 @@ void Init(const std::vector<std::pair<std::string, std::string> >& kwargs) overr
                   std::vector<TShape> *out_shape,
                   std::vector<TShape> *aux_shape) const override {
     using namespace mshadow;
-    CHECK_EQ(in_shape->size(), 2) << "Input:[data1, data2]";
+    CHECK_EQ(in_shape->size(), 2U) << "Input:[data1, data2]";
     TShape dshape1 = in_shape->at(Correlation::kData1);
     TShape dshape2 = in_shape->at(Correlation::kData2);
-    CHECK_EQ(dshape1.ndim(), 4) << "data should be a 4D tensor";
-    CHECK_EQ(dshape2.ndim(), 4) << "data should be a 4D tensor";
+    CHECK_EQ(dshape1.ndim(), 4U) << "data should be a 4D tensor";
+    CHECK_EQ(dshape2.ndim(), 4U) << "data should be a 4D tensor";
     int paddedbottomheight;
     int paddedbottomwidth;
     uint32_t kernel_radius_;
@@ -199,9 +217,9 @@ void Init(const std::vector<std::pair<std::string, std::string> >& kwargs) overr
     neighborhood_grid_radius_ = param_.max_displacement / stride2;
     neighborhood_grid_width_ = neighborhood_grid_radius_ * 2 + 1;
     top_channels_ = neighborhood_grid_width_ * neighborhood_grid_width_;
-    CHECK_GE(top_width_, 1) <<
+    CHECK_GE(top_width_, 1U) <<
     "Correlation cannot be done with current settings.Neighborhood and kernel don't fit in blob";
-    CHECK_GE(top_height_, 1) <<
+    CHECK_GE(top_height_, 1U) <<
     "Correlation cannot be done with current settings.Neighborhood and kernel don't fit in blob";
     out_shape->clear();
     out_shape->push_back(Shape4(dshape1[0], top_channels_, top_height_, top_width_));

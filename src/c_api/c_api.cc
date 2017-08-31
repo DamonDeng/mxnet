@@ -1,5 +1,23 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /*!
- *  Copyright (c) 2015 by Contributors
  * \file c_api.cc
  * \brief C API of mxnet
  */
@@ -8,6 +26,7 @@
 #include <dmlc/io.h>
 #include <dmlc/memory_io.h>
 #include <dmlc/recordio.h>
+#include <dmlc/omp.h>
 #include <mxnet/base.h>
 #include <mxnet/ndarray.h>
 #include <mxnet/operator.h>
@@ -23,7 +42,7 @@
 #include <functional>
 #include <utility>
 #include "./c_api_common.h"
-#include "../operator/custom-inl.h"
+#include "../operator/custom/custom-inl.h"
 #include "../engine/profiler.h"
 
 using namespace mxnet;
@@ -87,6 +106,19 @@ int MXSetProfilerConfig(int mode, const char* filename) {
   API_END();
 }
 
+int MXDumpProfile() {
+  API_BEGIN();
+#if MXNET_USE_PROFILER
+  engine::Profiler *profiler = engine::Profiler::Get();
+  CHECK(profiler->IsEnableOutput())
+    << "Profiler haven't been run. Config and start profiler first";
+  engine::Profiler::Get()->DumpProfile();
+#else
+  LOG(FATAL) << "Need to compile with USE_PROFILER=1 for MXNet Profiler";
+#endif
+  API_END()
+}
+
 int MXSetProfilerState(int state) {
   // state, kNotRunning: 0, kRunning: 1
   API_BEGIN();
@@ -95,6 +127,12 @@ int MXSetProfilerState(int state) {
 #else
   LOG(FATAL) << "Need to compile with USE_PROFILER=1 for MXNet Profiler";
 #endif
+  API_END();
+}
+
+int MXSetNumOMPThreads(int thread_num) {
+  API_BEGIN();
+  omp_set_num_threads(thread_num);
   API_END();
 }
 
@@ -133,6 +171,39 @@ int MXNDArrayCreateEx(const mx_uint *shape,
       dtype);
   API_END();
 }
+
+int MXNDArrayCreateSparseEx(int storage_type,
+                    const mx_uint *shape,
+                    mx_uint ndim,
+                    int dev_type,
+                    int dev_id,
+                    int delay_alloc,
+                    int dtype,
+                    mx_uint num_aux,
+                    int *aux_type,
+                    mx_uint *aux_ndims,
+                    const mx_uint *aux_shape,
+                    NDArrayHandle *out) {
+  API_BEGIN();
+  std::vector<int> aux_types;
+  std::vector<TShape> aux_shapes;
+  auto shape_start = aux_shape;
+  for (size_t i = 0; i < num_aux; i++) {
+    // types
+    aux_types.push_back(aux_type[i]);
+    // shapes
+    aux_shapes.emplace_back(shape_start, shape_start + aux_ndims[i]);
+    shape_start += aux_ndims[i];
+  }
+  *out = new NDArray(
+      NDArrayStorageType(storage_type),
+      TShape(shape, shape + ndim),
+      Context::Create(static_cast<Context::DeviceType>(dev_type), dev_id),
+      delay_alloc != 0,
+      dtype, aux_types, aux_shapes);
+  API_END();
+}
+
 
 int MXNDArrayLoadFromRawBytes(const void *buf,
                               size_t size,
@@ -174,6 +245,23 @@ int MXNDArraySyncCopyToCPU(NDArrayHandle handle,
                            size_t size) {
   API_BEGIN();
   static_cast<NDArray*>(handle)->SyncCopyToCPU(data, size);
+  API_END();
+}
+
+/*!
+ * \brief Copy src.data() to dst.data() if i = -1, else dst.aux_data(i) if i >= 0
+ * This function blocks. Do not use it in performance critical code.
+ * \param handle_dst handle of a dst ndarray whose data/aux_data has been allocated
+ * \param handle_src handle of a src ndarray which has default storage type
+ * \param i dst data blob indicator
+ */
+int MXNDArraySyncCopyFromNDArray(NDArrayHandle handle_dst,
+                                 const NDArrayHandle handle_src,
+                                 const int i) {
+  API_BEGIN();
+  NDArray* dst = static_cast<NDArray*>(handle_dst);
+  NDArray* src = static_cast<NDArray*>(handle_src);
+  dst->SyncCopyFromNDArray(*src, -1, i);
   API_END();
 }
 
@@ -283,21 +371,61 @@ MXNET_DLL int MXNDArrayReshape(NDArrayHandle handle,
                                NDArrayHandle *out) {
   NDArray *ptr = new NDArray();
   API_BEGIN();
+  NDArray *arr = static_cast<NDArray*>(handle);
   TShape new_shape(dims, dims+ndim);
-  *ptr = static_cast<NDArray*>(handle)->Reshape(new_shape);
+  int size = 1;
+  int pos = -1;
+  for (int i = 0; i < ndim; ++i) {
+    int dim = dims[i];
+    if (dim == -1) {
+      CHECK_EQ(pos, -1)
+        << "Invalid new shape " << new_shape
+        << ": more than one dimensions are -1";
+      pos = i;
+    } else {
+      if (dim == 0) {
+        CHECK_LT(i, arr->shape().ndim())
+          << "Invalid new shape " << new_shape
+          << ": 0 dimension exceeds original shape " << arr->shape();
+        dim = arr->shape()[i];
+      }
+      size *= dim;
+      new_shape[i] = dim;
+    }
+  }
+  if (pos >= 0) {
+    new_shape[pos] = arr->shape().Size() / size;
+  }
+  *ptr = arr->Reshape(new_shape);
   *out = ptr;
   API_END_HANDLE_ERROR(delete ptr);
+}
+
+int MXNDArrayGetStorageType(NDArrayHandle handle,
+                     int *out_storage_type) {
+  API_BEGIN();
+  NDArray *arr = static_cast<NDArray*>(handle);
+  if (!arr->is_none()) {
+    *out_storage_type = arr->storage_type();
+  } else {
+    *out_storage_type = kUndefinedStorage;
+  }
+  API_END();
 }
 
 int MXNDArrayGetShape(NDArrayHandle handle,
                       mx_uint *out_dim,
                       const mx_uint **out_pdata) {
+  MXAPIThreadLocalEntry *ret = MXAPIThreadLocalStore::Get();
   API_BEGIN();
   NDArray *arr = static_cast<NDArray*>(handle);
   if (!arr->is_none()) {
     const TShape &s = arr->shape();
     *out_dim = s.ndim();
-    *out_pdata = s.data();
+    std::vector<uint32_t>& buffer = ret->arg_shape_buffer;
+    buffer.resize(s.ndim());
+    nnvm::ShapeTypeCast(s.begin(), s.end(), buffer.data());
+    *out_pdata = buffer.data();
   } else {
     *out_dim = 0;
   }
@@ -305,15 +433,11 @@ int MXNDArrayGetShape(NDArrayHandle handle,
 }
 
 int MXNDArrayGetData(NDArrayHandle handle,
-                     mx_float **out_pdata) {
+                     void **out_pdata) {
   API_BEGIN();
   NDArray *arr = static_cast<NDArray*>(handle);
   if (!arr->is_none()) {
-    CHECK(arr->ctx().dev_mask() == cpu::kDevMask)
-        << "MXNDArrayGetData can only be called for NDArray on CPU";
-    const TBlob &b = arr->data();
-    CHECK(b.CheckContiguous());
-    *out_pdata = b.FlatTo2D<cpu, mx_float>().dptr_;
+    *out_pdata = arr->data().dptr_;
   } else {
     *out_pdata = nullptr;
   }
@@ -332,6 +456,42 @@ int MXNDArrayGetDType(NDArrayHandle handle,
   API_END();
 }
 
+int MXNDArrayGetAuxType(NDArrayHandle handle,
+                        mx_uint i,
+                        int *out_type) {
+  API_BEGIN();
+  NDArray *arr = static_cast<NDArray*>(handle);
+  *out_type = arr->aux_type(i);
+  API_END();
+}
+
+/*!
+ * \brief Get a deep copy of the ith aux data blob
+ * in the form of an NDArray of default storage type.
+ * This function blocks. Do not use it in performance critical code.
+ */
+int MXNDArrayGetAuxNDArray(NDArrayHandle handle,
+                           mx_uint i,
+                           NDArrayHandle *out) {
+  API_BEGIN();
+  NDArray *arr = static_cast<NDArray*>(handle);
+  *out = new NDArray(arr->aux_ndarray(i));
+  API_END();
+}
+
+/*!
+ * \brief Get a deep copy of the data blob
+ * in the form of an NDArray of default storage type.
+ * This function blocks. Do not use it in performance critical code.
+ */
+int MXNDArrayGetDataNDArray(NDArrayHandle handle,
+                            NDArrayHandle *out) {
+  API_BEGIN();
+  NDArray *arr = static_cast<NDArray*>(handle);
+  *out = new NDArray(arr->data_ndarray());
+  API_END();
+}
+
 int MXNDArrayGetContext(NDArrayHandle handle,
                         int *out_dev_type,
                         int *out_dev_id) {
@@ -345,6 +505,40 @@ int MXNDArrayGetContext(NDArrayHandle handle,
     *out_dev_type = 0;
     *out_dev_id = 0;
   }
+  API_END();
+}
+
+
+int MXNDArrayGetGrad(NDArrayHandle handle, NDArrayHandle *out) {
+  API_BEGIN();
+  NDArray *arr = static_cast<NDArray*>(handle);
+  NDArray ret = arr->grad();
+  if (ret.is_none()) {
+    *out = NULL;
+  } else {
+    *out = new NDArray(ret);
+  }
+  API_END();
+}
+
+int MXNDArrayDetach(NDArrayHandle handle, NDArrayHandle *out) {
+  API_BEGIN();
+  NDArray *arr = static_cast<NDArray*>(handle);
+  *out = new NDArray(arr->Detach());
+  API_END();
+}
+
+int MXNDArraySetGradState(NDArrayHandle handle, int state) {
+  API_BEGIN();
+  NDArray *arr = static_cast<NDArray*>(handle);
+  arr->set_fresh_out_grad(static_cast<bool>(state));
+  API_END();
+}
+
+int MXNDArrayGetGradState(NDArrayHandle handle, int *out) {
+  API_BEGIN();
+  NDArray *arr = static_cast<NDArray*>(handle);
+  *out = arr->fresh_out_grad();
   API_END();
 }
 
@@ -554,6 +748,21 @@ int MXKVStoreInit(KVStoreHandle handle,
   API_END();
 }
 
+int MXKVStoreInitEx(KVStoreHandle handle,
+                  mx_uint num,
+                  const char** keys,
+                  NDArrayHandle* vals) {
+  API_BEGIN();
+  std::vector<std::string> v_keys(num);
+  std::vector<NDArray> v_vals(num);
+  for (mx_uint i = 0; i < num; ++i) {
+    v_keys[i] = keys[i];
+    v_vals[i] = *static_cast<NDArray*>(vals[i]);
+  }
+  static_cast<KVStore*>(handle)->Init(v_keys, v_vals);
+  API_END();
+}
+
 int MXKVStorePush(KVStoreHandle handle,
                   mx_uint num,
                   const int* keys,
@@ -561,6 +770,22 @@ int MXKVStorePush(KVStoreHandle handle,
                   int priority) {
   API_BEGIN();
   std::vector<int> v_keys(num);
+  std::vector<NDArray> v_vals(num);
+  for (mx_uint i = 0; i < num; ++i) {
+    v_keys[i] = keys[i];
+    v_vals[i] = *static_cast<NDArray*>(vals[i]);
+  }
+  static_cast<KVStore*>(handle)->Push(v_keys, v_vals, priority);
+  API_END();
+}
+
+int MXKVStorePushEx(KVStoreHandle handle,
+                  mx_uint num,
+                  const char** keys,
+                  NDArrayHandle* vals,
+                  int priority) {
+  API_BEGIN();
+  std::vector<std::string> v_keys(num);
   std::vector<NDArray> v_vals(num);
   for (mx_uint i = 0; i < num; ++i) {
     v_keys[i] = keys[i];
@@ -586,10 +811,61 @@ int MXKVStorePull(KVStoreHandle handle,
   API_END();
 }
 
-int MXKVStoreSetUpdater(KVStoreHandle handle,
-                        MXKVStoreUpdater updater,
-                        void* updater_handle) {
+int MXKVStorePullEx(KVStoreHandle handle,
+                  mx_uint num,
+                  const char** keys,
+                  NDArrayHandle* vals,
+                  int priority) {
   API_BEGIN();
+  std::vector<std::string> v_keys(num);
+  std::vector<NDArray*> v_vals(num);
+  for (mx_uint i = 0; i < num; ++i) {
+    v_keys[i] = keys[i];
+    v_vals[i] = static_cast<NDArray*>(vals[i]);
+  }
+  static_cast<KVStore*>(handle)->Pull(v_keys, v_vals, priority);
+  API_END();
+}
+
+int MXKVStorePullRowSparse(KVStoreHandle handle,
+                           mx_uint num,
+                           const int* keys,
+                           NDArrayHandle* vals,
+                           const NDArrayHandle* row_ids,
+                           int priority) {
+  API_BEGIN();
+  std::vector<int> v_keys(num);
+  std::vector<std::pair<NDArray*, NDArray>> v_val_rowids(num);
+  for (mx_uint i = 0; i < num; ++i) {
+    v_keys[i] = keys[i];
+    v_val_rowids[i] = std::make_pair(static_cast<NDArray*>(vals[i]),
+                                     *static_cast<NDArray*>(row_ids[i]));
+  }
+  static_cast<KVStore*>(handle)->PullRowSparse(v_keys, v_val_rowids, priority);
+  API_END();
+}
+
+int MXKVStorePullRowSparseEx(KVStoreHandle handle,
+                             mx_uint num,
+                             const char** keys,
+                             NDArrayHandle* vals,
+                             const NDArrayHandle* row_ids,
+                             int priority) {
+  API_BEGIN();
+  std::vector<std::string> v_keys(num);
+  std::vector<std::pair<NDArray*, NDArray>> v_val_rowids(num);
+  for (mx_uint i = 0; i < num; ++i) {
+    v_keys[i] = keys[i];
+    v_val_rowids[i] = std::make_pair(static_cast<NDArray*>(vals[i]),
+                                     *static_cast<NDArray*>(row_ids[i]));
+  }
+  static_cast<KVStore*>(handle)->PullRowSparse(v_keys, v_val_rowids, priority);
+  API_END();
+}
+
+void MXKVStoreSetUpdaterImpl(KVStoreHandle handle,
+                             MXKVStoreUpdater updater,
+                             void* updater_handle) {
   MXKVStoreUpdater * updater_temp = updater;
   void* updater_handle_temp = updater_handle;
   std::function<void(int, const NDArray&, NDArray*)> updt
@@ -599,6 +875,36 @@ int MXKVStoreSetUpdater(KVStoreHandle handle,
     NDArray* local_copy = new NDArray();
     *local_copy = *local;
     updater_temp(key, recv_copy, local_copy, updater_handle_temp);
+  };
+  static_cast<KVStore*>(handle)->set_updater(updt);
+}
+
+int MXKVStoreSetUpdater(KVStoreHandle handle,
+                        MXKVStoreUpdater updater,
+                        void* updater_handle) {
+  API_BEGIN();
+  MXKVStoreSetUpdaterImpl(handle, updater, updater_handle);
+  API_END();
+}
+
+int MXKVStoreSetUpdaterEx(KVStoreHandle handle,
+                          MXKVStoreUpdater updater,
+                          MXKVStoreStrUpdater str_updater,
+                          void* updater_handle) {
+  API_BEGIN();
+  // set updater with int keys
+  MXKVStoreSetUpdaterImpl(handle, updater, updater_handle);
+  // set updater with string keys
+  MXKVStoreStrUpdater * updater_temp = str_updater;
+  void* updater_handle_temp = updater_handle;
+  std::function<void(const std::string&, const NDArray&, NDArray*)> updt
+  = [updater_temp, updater_handle_temp]
+    (const std::string& key, const NDArray& recv, NDArray* local) {
+    NDArray* recv_copy = new NDArray();
+    *recv_copy = recv;
+    NDArray* local_copy = new NDArray();
+    *local_copy = *local;
+    updater_temp(key.c_str(), recv_copy, local_copy, updater_handle_temp);
   };
   static_cast<KVStore*>(handle)->set_updater(updt);
   API_END();
@@ -856,6 +1162,6 @@ int MXRtcFree(RtcHandle handle) {
 
 int MXCustomOpRegister(const char* op_type, CustomOpPropCreator creator) {
   API_BEGIN();
-  mxnet::op::CustomOpProp::Register(op_type, creator);
+  mxnet::op::custom::Registry::Get()->Register(op_type, creator);
   API_END();
 }

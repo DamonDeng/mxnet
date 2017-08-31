@@ -1,3 +1,20 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package ml.dmlc.mxnet.spark
 
 import java.io.{IOException, InputStream, OutputStream}
@@ -12,9 +29,8 @@ import scala.collection.JavaConverters._
 
 /**
  * Start ps scheduler/server in a new process
- * @author Yizhi Liu
  */
-object ParameterServer {
+private[mxnet] object ParameterServer {
   private val logger: Logger = LoggerFactory.getLogger(classOf[ParameterServer])
   def main(args: Array[String]): Unit = {
     val cmdLine = new CommandLine
@@ -68,17 +84,19 @@ object ParameterServer {
   }
 }
 
-class ParameterServer(private val classpath: String,
-                      private val role: String,
-                      private val rootUri: String,
-                      private val rootPort: Int,
-                      private val numServer: Int = 1,
-                      private val numWorker: Int = 1,
-                      private val timeout: Int = 0,
-                      private val java: String = "java",
-                      private val jvmOpts: String = "") {
+class ParameterServer(
+    classpath: String,
+    role: String,
+    rootUri: String,
+    rootPort: Int,
+    numServer: Int = 1,
+    numWorker: Int = 1,
+    timeout: Int = 0,
+    java: String = "java",
+    jvmOpts: String = "") {
+
   private val logger: Logger = LoggerFactory.getLogger(classOf[ParameterServer])
-  private val trackerProcess: AtomicReference[Process] = new AtomicReference[Process]
+  private val psProcess: AtomicReference[Process] = new AtomicReference[Process]
 
   /**
    * A utility class to redirect the child process's stdout or stderr.
@@ -105,47 +123,38 @@ class ParameterServer(private val classpath: String,
     }
   }
 
-  def startProcess(): Boolean = {
+  private def startLoggingThreads(rootUri: String, rootPort: Int): Unit = {
+    val inputStream = psProcess.get().getInputStream
+    val errorStream = psProcess.get().getErrorStream
+    logger.info(s"Starting InputStream-Redirecter Thread for $rootUri:$rootPort")
+    new RedirectThread(inputStream, System.out, "InputStream-Redirecter", true).start()
+    logger.info(s"Starting ErrorStream-Redirecter Thread for $rootUri:$rootPort")
+    new RedirectThread(errorStream, System.err, "ErrorStream-Redirecter", true).start()
+  }
+
+  def startProcess(): Int = {
     val cp = if (classpath == null) "" else s"-cp $classpath"
     val cmd = s"$java $jvmOpts $cp $runningClass " +
       s"--role=$role --root-uri=$rootUri --root-port=$rootPort " +
       s"--num-server=$numServer --num-worker=$numWorker --timeout=$timeout"
-    logger.info(s"Start process: $cmd")
     try {
       val childProcess = Runtime.getRuntime.exec(cmd)
-      trackerProcess.set(childProcess)
-      val inputStream = childProcess.getInputStream
-      val errorStream = childProcess.getErrorStream
-      logger.info("Starting InputStream-Redirecter Thread")
-      new RedirectThread(inputStream, System.out, "InputStream-Redirecter", true).start()
-      logger.info("Starting ErrorStream-Redirecter Thread")
-      new RedirectThread(errorStream, System.err, "ErrorStream-Redirecter", true).start()
-      true
+      logger.info(s"Started process: $cmd at $rootUri:$rootPort")
+      psProcess.set(childProcess)
+      startLoggingThreads(rootUri, rootPort)
+      psProcess.get().waitFor()
     } catch {
       case ioe: IOException =>
         ioe.printStackTrace()
-        false
+        1
+    } finally {
+      stop()
     }
   }
 
   def stop() {
-    if (trackerProcess.get != null) {
-      trackerProcess.get.destroy()
-    }
-  }
-
-  def waitFor(): Int = {
-    try {
-      trackerProcess.get.waitFor()
-      val returnVal: Int = trackerProcess.get.exitValue
-      logger.info("Process ends with exit code " + returnVal)
-      stop()
-      returnVal
-    } catch {
-      case e: InterruptedException =>
-        e.printStackTrace()
-        logger.error("Process terminated unexpectedly")
-        1
+    if (psProcess.get != null && psProcess.get().isAlive) {
+      psProcess.get.destroy()
     }
   }
 

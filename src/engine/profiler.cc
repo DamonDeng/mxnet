@@ -1,10 +1,29 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /*!
- * Copyright (c) 2015 by Contributors
  * \file profiler.cc
  * \brief implements profiler
  */
 #include <dmlc/base.h>
 #include <dmlc/logging.h>
+#include <mxnet/base.h>
 #include <set>
 #include <map>
 #include <mutex>
@@ -13,10 +32,12 @@
 #include <fstream>
 #include "./profiler.h"
 
+#if defined(_MSC_VER) && _MSC_VER <= 1800
+#include <Windows.h>
+#endif
+
 namespace mxnet {
 namespace engine {
-
-Profiler* Profiler::instance_ = new Profiler();
 const int INITIAL_SIZE = 1024;
 
 Profiler::Profiler()
@@ -26,12 +47,11 @@ Profiler::Profiler()
   // TODO(ziheng) get device number during execution
   int kMaxNumCpus = 64;
   this->cpu_num_ = kMaxNumCpus;
-
 #if MXNET_USE_CUDA
-  cudaError_t ret = cudaGetDeviceCount(reinterpret_cast<int*>(&this->gpu_num_));
-  if (ret != cudaSuccess) {
-    this->gpu_num_ = 0;
-  }
+  int kMaxNumGpus = 32;
+  this->gpu_num_ = kMaxNumGpus;
+#else
+  this->gpu_num_ = 0;
 #endif
 
   this->profile_stat = new DevStat[cpu_num_ + gpu_num_ + 1];
@@ -52,7 +72,12 @@ Profiler::Profiler()
 }
 
 Profiler* Profiler::Get() {
-  return instance_;
+#if MXNET_USE_PROFILER
+  static Profiler inst;
+  return &inst;
+#else
+  return nullptr;
+#endif
 }
 
 void Profiler::SetState(ProfilerState state) {
@@ -125,6 +150,8 @@ void Profiler::EmitEvent(std::ostream *os, const std::string& name,
 
 
 void Profiler::DumpProfile() {
+  SetState(kNotRunning);
+
   std::lock_guard<std::mutex> lock{this->m_};
   std::ofstream file;
   file.open(filename_);
@@ -170,12 +197,21 @@ void Profiler::DumpProfile() {
   file << "    ]," << std::endl;
   file << "    \"displayTimeUnit\": \"ms\"" << std::endl;
   file << "}" << std::endl;
+
+  enable_output_ = false;
 }
 
 
 inline uint64_t NowInUsec() {
+#if defined(_MSC_VER) && _MSC_VER <= 1800
+  LARGE_INTEGER frequency, counter;
+  QueryPerformanceFrequency(&frequency);
+  QueryPerformanceCounter(&counter);
+  return counter.QuadPart * 1000000 / frequency.QuadPart;
+#else
   return std::chrono::duration_cast<std::chrono::microseconds>(
     std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+#endif
 }
 
 void SetOprStart(OprExecStat* opr_stat) {
